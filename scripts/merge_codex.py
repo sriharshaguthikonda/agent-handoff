@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Merge agent-handoff hooks into an existing .claude/settings.json.
+"""Merge agent-handoff hooks into Codex hooks.json.
 
-Does NOT overwrite — appends only the hook entries not already present.
-Backs up existing file to settings.json.bak before writing.
+Default target: ~/.codex/hooks.json (global).
+Never overwrites — appends only missing entries. Backs up first.
 
 Usage:
-    python scripts/merge_settings.py                      # target: cwd/.claude/settings.json
-    python scripts/merge_settings.py --target /repo/path  # target repo
-    python scripts/merge_settings.py --global             # ~/.claude/settings.json
-    python scripts/merge_settings.py --dry-run            # print result, don't write
+    python scripts/merge_codex.py                     # global ~/.codex/hooks.json
+    python scripts/merge_codex.py --target /path/to/hooks.json
+    python scripts/merge_codex.py --dry-run
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -22,35 +22,30 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parent.parent
 
 
-def _handoff_hooks(mode: str = "defer") -> dict:
-    """Build hook config.
-
-    mode='defer'  : end-turn + resume via watcher (pretool_ask.py)
-    mode='block'  : same-turn blocking pause (pretool_ask_block.py, timeout 7200s)
-    """
+def _codex_hooks() -> dict:
     repo_posix = _REPO.as_posix()
-    if mode == "block":
-        pretool_cmd = f"python {repo_posix}/claude/pretool_ask_block.py"
-        pretool_entry = {"type": "command", "command": pretool_cmd, "timeout": 7200}
-    else:
-        pretool_cmd = f"python {repo_posix}/claude/pretool_ask.py"
-        pretool_entry = {"type": "command", "command": pretool_cmd}
     return {
-        "PreToolUse": [
+        "Stop": [
             {
-                "matcher": "AskUserQuestion",
-                "hooks": [pretool_entry],
-            }
-        ],
-        "Notification": [
-            {
-                "matcher": "permission_prompt|idle_prompt",
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f"python {repo_posix}/scripts/notify.py",
+                        "command": f"python {repo_posix}/codex/stop_gate.py",
+                        "timeout": 30,
                     }
-                ],
+                ]
+            }
+        ],
+        "SessionStart": [
+            {
+                "matcher": "startup|resume",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f"python {repo_posix}/codex/session_start.py",
+                        "timeout": 10,
+                    }
+                ]
             }
         ],
     }
@@ -67,11 +62,6 @@ def _existing_commands(entries: list[dict]) -> set[str]:
 
 
 def merge_hooks(existing: dict, additions: dict) -> tuple[dict, list[str]]:
-    """Merge additions into existing hooks block.
-
-    Returns (merged_hooks, list_of_added_descriptions).
-    Skips entries whose command string is already present.
-    """
     result: dict = dict(existing)
     added: list[str] = []
     for event, new_entries in additions.items():
@@ -98,17 +88,17 @@ def merge_into(settings_path: Path, dry_run: bool = False) -> int:
         try:
             current = json.loads(settings_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            print(f"warning: {settings_path} is invalid JSON — treating as empty", file=sys.stderr)
+            print(f"warning: {settings_path} invalid JSON, treating as empty", file=sys.stderr)
             current = {}
     else:
         current = {}
 
     current.setdefault("hooks", {})
-    merged_hooks, added = merge_hooks(current["hooks"], _handoff_hooks(mode=_MODE))
+    merged_hooks, added = merge_hooks(current["hooks"], _codex_hooks())
     current["hooks"] = merged_hooks
 
     if not added:
-        print(f"nothing to add — hooks already present in {settings_path}")
+        print(f"nothing to add - hooks already present in {settings_path}")
         return 0
 
     if dry_run:
@@ -117,14 +107,11 @@ def merge_into(settings_path: Path, dry_run: bool = False) -> int:
         print(f"\nwould add: {added}")
         return 0
 
-    # backup
     if settings_path.exists():
         bak = settings_path.with_suffix(".json.bak")
-        import shutil
         shutil.copy2(str(settings_path), str(bak))
         print(f"backed up -> {bak}")
 
-    # atomic write
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".tmp", dir=settings_path.parent, delete=False, encoding="utf-8"
     ) as f:
@@ -140,28 +127,16 @@ def merge_into(settings_path: Path, dry_run: bool = False) -> int:
     return 0
 
 
-_MODE = "defer"
-
-
 def main() -> int:
-    global _MODE
-    ap = argparse.ArgumentParser(description="Merge agent-handoff hooks into .claude/settings.json")
-    ap.add_argument("--target", help="Path to target repo (default: cwd)")
-    ap.add_argument("--global", dest="global_", action="store_true",
-                    help="Merge into global ~/.claude/settings.json")
-    ap.add_argument("--dry-run", action="store_true", help="Print result without writing")
-    ap.add_argument("--mode", choices=["defer", "block"], default="defer",
-                    help="defer=end turn + watcher resume; block=same-turn pause (default: defer)")
+    ap = argparse.ArgumentParser(description="Merge agent-handoff hooks into Codex hooks.json")
+    ap.add_argument("--target", help="Explicit hooks.json path (default: ~/.codex/hooks.json)")
+    ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    _MODE = args.mode
-
-    if args.global_:
-        settings_path = Path.home() / ".claude" / "settings.json"
-    elif args.target:
-        settings_path = Path(args.target) / ".claude" / "settings.json"
+    if args.target:
+        settings_path = Path(args.target)
     else:
-        settings_path = Path.cwd() / ".claude" / "settings.json"
+        settings_path = Path.home() / ".codex" / "hooks.json"
 
     return merge_into(settings_path, dry_run=args.dry_run)
 

@@ -1,57 +1,58 @@
 # Integration guide
 
+## Two modes — pick one per install
+
+| Mode | Hook | Turn behavior | When to use |
+|------|------|---------------|-------------|
+| **block** | `pretool_ask_block.py` | Hook polls answer file in-place → same turn, same context | Short human delays (minutes); want continuity inside one tool call |
+| **defer** | `pretool_ask.py` | Hook returns `defer` → turn ends → watcher launches `claude -p --resume` | Long delays (hours/days); free up the Claude process |
+
+Block mode requires a generous hook timeout (`timeout: 7200` = 2 h) — the merge script sets this for you. Past timeout, block mode falls back to defer.
+
 ## Claude Code wiring
 
-### Merge hooks into a target repo (safe — never overwrites)
+### Merge hooks (safe — never overwrites)
 
 ```bash
-# Adds only the missing hook entries; backs up existing settings.json first.
-python C:/AI/agent-handoff/scripts/merge_settings.py --target /path/to/target-repo
+# Global, block mode (recommended for interactive-like behavior)
+python C:/AI/agent-handoff/scripts/merge_settings.py --global --mode block
+
+# Global, defer mode (end-turn + watcher resume)
+python C:/AI/agent-handoff/scripts/merge_settings.py --global --mode defer
+
+# Per-repo
+python C:/AI/agent-handoff/scripts/merge_settings.py --target /path/to/repo --mode block
+
+# Dry-run
+python C:/AI/agent-handoff/scripts/merge_settings.py --global --mode block --dry-run
 ```
 
-To merge into the **global** Claude settings (applies to all repos):
+The script appends only entries whose `command` string is not already present — running it twice is idempotent. A `.bak` copy of the original is created before any write.
 
-```bash
-python C:/AI/agent-handoff/scripts/merge_settings.py --global
-```
+### Block-mode env config
 
-Preview without writing:
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `HANDOFF_BLOCK_TIMEOUT` | `1800` | Seconds the hook polls before falling back to defer |
+| `HANDOFF_BLOCK_POLL` | `2.0` | Poll interval seconds |
 
-```bash
-python C:/AI/agent-handoff/scripts/merge_settings.py --target /repo --dry-run
-```
+### Non-interactive scope
 
-The script appends only entries whose `command` string is not already present —
-running it twice is idempotent. A `.bak` copy of the original file is created before any write.
-
-### What gets merged
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "AskUserQuestion",
-        "hooks": [{"type": "command", "command": "python C:/AI/agent-handoff/claude/pretool_ask.py"}]
-      }
-    ],
-    "Notification": [
-      {
-        "matcher": "permission_prompt|idle_prompt",
-        "hooks": [{"type": "command", "command": "python C:/AI/agent-handoff/scripts/notify.py"}]
-      }
-    ]
-  }
-}
-```
-
-### Non-interactive only
-
-`defer` works in `claude -p` mode only. Interactive sessions fall back to writing the question file + notifying; the session continues and the human can answer in the terminal as normal. The handoff path adds value for long autonomous runs.
+Defer mode works in `claude -p` mode (resumable). Block mode works in both interactive and `-p` — the hook simply blocks the tool call until answer arrives.
 
 ---
 
 ## Codex CLI wiring
+
+### Merge hooks globally (safe — never overwrites)
+
+```bash
+python C:/AI/agent-handoff/scripts/merge_codex.py
+# preview:
+python C:/AI/agent-handoff/scripts/merge_codex.py --dry-run
+```
+
+Codex same-turn pause is not natively possible: the `Stop` hook fires *after* the turn ends, so handoff uses the `[[QUESTION:q_<id>]]` marker + `SessionStart` answer injection pattern (effectively defer-mode).
 
 ### Enable hooks (feature flag)
 

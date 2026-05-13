@@ -355,6 +355,120 @@ class TestCleanup:
 
 
 # ---------------------------------------------------------------------------
+# Blocking hook variant (same-turn pause)
+# ---------------------------------------------------------------------------
+
+PRETOOL_BLOCK = str(_REPO / "claude" / "pretool_ask_block.py")
+
+
+def _run_block_hook(stdin_obj: dict, env_extra: dict) -> subprocess.CompletedProcess:
+    import os
+    env = {**os.environ, **env_extra}
+    return subprocess.run(
+        [sys.executable, PRETOOL_BLOCK],
+        input=json.dumps(stdin_obj).encode("utf-8"),
+        capture_output=True,
+        env=env,
+        timeout=15,
+    )
+
+
+class TestBlockingHook:
+    def test_allow_when_answer_already_present(self, tmp_path: Path) -> None:
+        _setup_root(tmp_path)
+        event = {
+            "session_id": "sess_block_ok",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{"question": "go?"}]},
+        }
+        qid = derive_question_id_stable(event["session_id"], event["tool_input"])
+        from datetime import datetime, timezone
+        (tmp_path / "questions" / f"{qid}.json").write_text(json.dumps({
+            "question_id": qid, "session_id": event["session_id"],
+            "version": 1, "head_commit": "unknown",
+            "fallback_policy": "block_until_answer",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "provider": "claude",
+        }))
+        (tmp_path / "answers" / f"{qid}.json").write_text(json.dumps({
+            "question_id": qid, "session_id": event["session_id"],
+            "parent_version": 1, "head_commit_at_answer": "unknown",
+            "answers": [{"answer": "yes"}],
+        }))
+        result = _run_block_hook(event, {
+            "HANDOFF_ROOT_OVERRIDE": str(tmp_path),
+            "HANDOFF_BLOCK_TIMEOUT": "1",
+        })
+        assert result.returncode == 0
+        out = json.loads(result.stdout)
+        assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+        assert out["hookSpecificOutput"]["updatedInput"]["answers"] == [{"answer": "yes"}]
+
+    def test_defer_on_timeout(self, tmp_path: Path) -> None:
+        _setup_root(tmp_path)
+        event = {
+            "session_id": "sess_block_to",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{"question": "hang?"}]},
+        }
+        result = _run_block_hook(event, {
+            "HANDOFF_ROOT_OVERRIDE": str(tmp_path),
+            "HANDOFF_BLOCK_TIMEOUT": "1",
+            "HANDOFF_BLOCK_POLL": "0.2",
+        })
+        assert result.returncode == 0
+        out = json.loads(result.stdout)
+        assert out["hookSpecificOutput"]["permissionDecision"] == "defer"
+        audit = (tmp_path / "audit" / "events.jsonl").read_text()
+        assert "block_wait_started" in audit
+        assert "block_wait_timeout" in audit
+
+    def test_resolves_when_answer_arrives_mid_poll(self, tmp_path: Path) -> None:
+        _setup_root(tmp_path)
+        event = {
+            "session_id": "sess_block_mid",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{"question": "wait?"}]},
+        }
+        qid = derive_question_id_stable(event["session_id"], event["tool_input"])
+
+        import threading
+        from datetime import datetime, timezone
+
+        def _drop_answer():
+            time.sleep(0.8)
+            # question file is written by the hook itself, but we need to ensure it exists
+            # for the answer-validation path. Write a minimal one if missing.
+            qf = tmp_path / "questions" / f"{qid}.json"
+            if not qf.exists():
+                qf.write_text(json.dumps({
+                    "question_id": qid, "session_id": event["session_id"],
+                    "version": 1, "head_commit": "unknown",
+                    "fallback_policy": "block_until_answer",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "provider": "claude",
+                }))
+            (tmp_path / "answers" / f"{qid}.json").write_text(json.dumps({
+                "question_id": qid, "session_id": event["session_id"],
+                "parent_version": 1, "head_commit_at_answer": "unknown",
+                "answers": [{"answer": "ok"}],
+            }))
+
+        t = threading.Thread(target=_drop_answer, daemon=True)
+        t.start()
+        result = _run_block_hook(event, {
+            "HANDOFF_ROOT_OVERRIDE": str(tmp_path),
+            "HANDOFF_BLOCK_TIMEOUT": "5",
+            "HANDOFF_BLOCK_POLL": "0.2",
+        })
+        t.join(timeout=5)
+        assert result.returncode == 0
+        out = json.loads(result.stdout)
+        assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+        assert out["hookSpecificOutput"]["updatedInput"]["answers"] == [{"answer": "ok"}]
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 

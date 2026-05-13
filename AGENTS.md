@@ -12,14 +12,16 @@ File-based sleep/wake handshake so coding agents can ask humans questions withou
 | `docs/ROADMAP.md` | Phases 0-7 (all complete) |
 | `docs/THREAT_MODEL.md` | (TBD — future) |
 | `lib/core.py` | Shared logic: atomic I/O, question/answer contracts, HMAC signing, TTL, replay detection, lock |
-| `claude/pretool_ask.py` | Claude `PreToolUse` defer/allow hook |
+| `claude/pretool_ask.py` | Claude `PreToolUse` **defer-mode** hook (end turn → watcher resumes) |
+| `claude/pretool_ask_block.py` | Claude `PreToolUse` **block-mode** hook (same-turn pause; polls answer file) |
 | `claude/settings.example.json` | Reference hook config (use `merge_settings.py` instead of copying) |
 | `codex/stop_gate.py` | Codex `Stop` hook — detect `[[QUESTION:q_<id>]]` marker |
 | `codex/session_start.py` | Codex `SessionStart` hook — inject answer |
 | `codex/hooks.example.json` | Drop-in for `~/.codex/hooks.json` |
 | `scripts/notify.py` | Fan-out to ntfy, Telegram, Slack, BurntToast |
 | `scripts/resume.py` | Watcher + resume launcher |
-| `scripts/merge_settings.py` | Safely merge hook config into an existing `.claude/settings.json` |
+| `scripts/merge_settings.py` | Safely merge Claude hooks into `.claude/settings.json` (`--mode defer\|block`) |
+| `scripts/merge_codex.py` | Safely merge Codex hooks into `~/.codex/hooks.json` |
 | `scripts/cleanup.py` | Archive or purge old question/answer pairs (Phase 7) |
 | `scripts/install_watcher_windows.ps1` | Register Windows Scheduled Task (1-min poll) |
 | `handoff/HANDOFF.{md,json}` | Canonical sleep state (gitignored runtime, template committed) |
@@ -41,17 +43,31 @@ File-based sleep/wake handshake so coding agents can ask humans questions withou
 
 ## Current phase
 
-All phases 0-7 complete. 65 tests green. See `docs/ROADMAP.md` for details.
+All phases 0-7 complete + Phase 8 (block mode) + global Codex merge. 68 tests green. See `docs/ROADMAP.md`.
+
+## Two operating modes
+
+| Mode | Turn behavior | Use when |
+|------|---------------|----------|
+| **defer** (default) | Hook returns `defer`, turn ends, watcher launches new session via `claude -p --resume` | Long human delays (hours/days); minimal process cost |
+| **block** | Hook polls answer file in-place; same turn, same context, no resume needed | Short delays (minutes); you want continuity across the tool call |
 
 ## Quick start
 
 ```bash
 # 1. Copy .env.example to .env and fill in tokens (Telegram, ntfy, etc.)
 
-# 2. Wire hooks into target repo (SAFE — never overwrites)
-python C:/AI/agent-handoff/scripts/merge_settings.py --target /path/to/your-repo
-# or globally:
-python C:/AI/agent-handoff/scripts/merge_settings.py --global
+# 2a. Wire Claude hooks GLOBALLY (block mode = same-turn pause)
+python C:/AI/agent-handoff/scripts/merge_settings.py --global --mode block
+
+# 2b. Or defer mode (end-turn + watcher resume):
+python C:/AI/agent-handoff/scripts/merge_settings.py --global --mode defer
+
+# 2c. Per-target-repo install:
+python C:/AI/agent-handoff/scripts/merge_settings.py --target /path/to/your-repo --mode block
+
+# 2d. Wire Codex hooks GLOBALLY (~/.codex/hooks.json)
+python C:/AI/agent-handoff/scripts/merge_codex.py
 
 # 3. Install watcher as Windows Scheduled Task (runs every 60s)
 powershell -ExecutionPolicy Bypass -File scripts/install_watcher_windows.ps1

@@ -47,6 +47,17 @@
   - Backs up existing file before write
   - `--target`, `--global`, `--dry-run` flags
 
+## Phase 8 — same-turn pause (block mode) ✅ DONE
+- `claude/pretool_ask_block.py`: blocking variant — polls answer file in-place, returns `allow` when answer arrives. No session-end, no resume. Same turn, same context.
+- Config: `HANDOFF_BLOCK_TIMEOUT` (default 1800s), `HANDOFF_BLOCK_POLL` (default 2.0s)
+- `merge_settings.py --mode block`: wires the blocking hook with `timeout: 7200` (2 h Claude Code hook deadline)
+- 3 new tests in `test_phase4.py::TestBlockingHook` (allow-on-existing-answer, defer-on-timeout, resolves-mid-poll)
+- Backwards compatible: defer-mode (`pretool_ask.py`) untouched; choose per install via `--mode`
+
+## Codex global merge ✅ DONE
+- `scripts/merge_codex.py`: same safe-merge pattern for `~/.codex/hooks.json`
+- Codex same-turn pause is not natively possible (Codex `Stop` hook fires *after* turn ends); Codex uses the established `[[QUESTION]]` marker + SessionStart-injection pattern → effectively defer-mode only
+
 ## Out of scope (for now)
 - Cloud-hosted handoff server (use OpenAI background mode or Copilot cloud agent)
 - Multi-user / team handoff (single-user local-first)
