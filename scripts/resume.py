@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Watcher + resume launcher.
 
-Modes:
-  --watch                       poll answers/ forever, resume sessions when answers arrive
-  --session-id <id>             one-shot resume of a specific session
-  --provider [claude|codex]     defaults to value in state/active_session.json
+--watch              poll answers/ forever; resume sessions when answers arrive
+--session-id <id>    one-shot resume of a specific session (reads HANDOFF.json for provider)
+--provider <p>       force provider (claude|codex); defaults to HANDOFF.json or claude
+--dry-run            print commands without executing
 
-PHASE 0 STUB. Phase 1 fills in real provider calls.
+On new answer:
+  1. Load question from questions/q_<id>.json
+  2. Validate version + head_commit drift
+  3. Run: claude -p --resume <session_id>   (Claude path)
+         codex resume <session_id>          (Codex path)
 """
 from __future__ import annotations
 
@@ -18,77 +22,158 @@ import sys
 import time
 from pathlib import Path
 
-HANDOFF_ROOT = Path(__file__).resolve().parent.parent
-ANSWERS = HANDOFF_ROOT / "answers"
-QUESTIONS = HANDOFF_ROOT / "questions"
-STATE = HANDOFF_ROOT / "state"
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE.parent))
+
+from lib.core import (
+    HANDOFF_ROOT,
+    append_audit,
+    load_active_session,
+    load_env,
+    read_answer,
+    read_json,
+    read_question,
+    validate_answer,
+)
 
 
-def resume_claude(session_id: str) -> int:
-    # TODO Phase 1: invoke claude -p --resume <session_id> with proper stdin
-    print(f"[stub] would run: claude -p --resume {session_id}")
-    return 0
+# ---------------------------------------------------------------------------
+# Provider resume
+# ---------------------------------------------------------------------------
+
+def resume_claude(session_id: str, dry_run: bool = False) -> int:
+    cmd = ["claude", "-p", "--resume", session_id, "--bare"]
+    if dry_run:
+        print(f"[dry-run] {' '.join(cmd)}")
+        return 0
+    result = subprocess.run(cmd, stdin=subprocess.DEVNULL)
+    return result.returncode
 
 
-def resume_codex(session_id: str) -> int:
-    # TODO Phase 3: codex resume <session_id>
-    print(f"[stub] would run: codex resume {session_id}")
-    return 0
+def resume_codex(session_id: str, dry_run: bool = False) -> int:
+    cmd = ["codex", "resume", session_id]
+    if dry_run:
+        print(f"[dry-run] {' '.join(cmd)}")
+        return 0
+    result = subprocess.run(cmd, stdin=subprocess.DEVNULL)
+    return result.returncode
 
 
-def resume(provider: str, session_id: str) -> int:
-    if provider == "claude":
-        return resume_claude(session_id)
-    if provider == "codex":
-        return resume_codex(session_id)
-    print(f"unknown provider: {provider}", file=sys.stderr)
-    return 2
+PROVIDERS = {"claude": resume_claude, "codex": resume_codex}
 
 
-def find_new_answers(seen: set[str]) -> list[Path]:
-    if not ANSWERS.exists():
-        return []
-    out = []
-    for p in ANSWERS.glob("q_*.json"):
-        if p.name not in seen:
-            out.append(p)
-    return out
+def resume(provider: str, session_id: str, dry_run: bool = False) -> int:
+    fn = PROVIDERS.get(provider)
+    if not fn:
+        print(f"unknown provider: {provider}", file=sys.stderr)
+        return 2
+    print(f"resuming {provider} session {session_id}")
+    append_audit("resume_dispatched", session_id=session_id, provider=provider)
+    rc = fn(session_id, dry_run)
+    if rc == 0:
+        append_audit("session_resumed_ok", session_id=session_id)
+    else:
+        append_audit("session_resume_failed", session_id=session_id, returncode=rc)
+    return rc
 
 
-def watch(interval: int) -> int:
-    print(f"watching {ANSWERS} every {interval}s")
+# ---------------------------------------------------------------------------
+# Answer processing
+# ---------------------------------------------------------------------------
+
+def _mark_consumed(root: Path, question_id: str) -> None:
+    """Rename consumed answer so watcher doesn't re-trigger."""
+    src = root / "answers" / f"{question_id}.json"
+    dst = root / "answers" / f"{question_id}.consumed.json"
+    try:
+        os.replace(str(src), str(dst))
+    except Exception:
+        pass
+
+
+def process_answer(root: Path, ans_path: Path, dry_run: bool = False) -> None:
+    answer = read_json(ans_path)
+    if not answer:
+        print(f"skip {ans_path.name}: unreadable", file=sys.stderr)
+        return
+
+    question_id = answer.get("question_id")
+    session_id = answer.get("session_id")
+    if not question_id or not session_id:
+        print(f"skip {ans_path.name}: missing question_id or session_id", file=sys.stderr)
+        return
+
+    question = read_question(root, question_id)
+    if not question:
+        print(f"skip {ans_path.name}: question file not found", file=sys.stderr)
+        append_audit("answer_skipped", question_id=question_id, reason="question_not_found")
+        return
+
+    ok, reason = validate_answer(question, answer)
+    if not ok:
+        print(f"skip {ans_path.name}: {reason}", file=sys.stderr)
+        append_audit("answer_rejected", question_id=question_id, reason=reason)
+        return
+
+    provider = question.get("provider", "claude")
+    append_audit("answer_accepted", question_id=question_id, session_id=session_id, provider=provider)
+
+    _mark_consumed(root, question_id)
+    resume(provider, session_id, dry_run=dry_run)
+
+
+# ---------------------------------------------------------------------------
+# Watcher
+# ---------------------------------------------------------------------------
+
+def watch(root: Path, interval: int, dry_run: bool = False) -> int:
+    answers_dir = root / "answers"
+    print(f"watching {answers_dir} every {interval}s (dry_run={dry_run})")
+
     seen: set[str] = set()
-    for p in ANSWERS.glob("q_*.json"):
+    for p in answers_dir.glob("q_*.json"):
         seen.add(p.name)
+
     while True:
-        new = find_new_answers(seen)
-        for ans_path in new:
-            seen.add(ans_path.name)
-            try:
-                ans = json.loads(ans_path.read_text(encoding="utf-8"))
-            except Exception as e:
-                print(f"skip {ans_path.name}: {e}", file=sys.stderr)
-                continue
-            sid = ans.get("session_id")
-            if not sid:
-                continue
-            # TODO Phase 1: read provider from questions/<qid>.json, validate version/commit
-            resume("claude", sid)
+        try:
+            for p in answers_dir.glob("q_*.json"):
+                if p.name not in seen:
+                    seen.add(p.name)
+                    print(f"new answer: {p.name}")
+                    process_answer(root, p, dry_run=dry_run)
+        except Exception as e:
+            print(f"watch error: {e}", file=sys.stderr)
         time.sleep(interval)
 
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--watch", action="store_true")
-    ap.add_argument("--session-id")
-    ap.add_argument("--provider", default="claude", choices=["claude", "codex"])
+    ap = argparse.ArgumentParser(
+        description="Watch for human answers and resume agent sessions."
+    )
+    ap.add_argument("--watch", action="store_true", help="poll answers/ forever")
+    ap.add_argument("--session-id", help="one-shot resume of a specific session")
+    ap.add_argument("--provider", default=None, choices=["claude", "codex"])
+    ap.add_argument("--dry-run", action="store_true", help="print commands, don't run")
     args = ap.parse_args()
 
+    root = HANDOFF_ROOT
+    env = load_env(root)
+    interval = int(env.get("HANDOFF_POLL_INTERVAL", "5"))
+
     if args.watch:
-        interval = int(os.environ.get("HANDOFF_POLL_INTERVAL", "5"))
-        return watch(interval)
+        return watch(root, interval, dry_run=args.dry_run)
+
     if args.session_id:
-        return resume(args.provider, args.session_id)
+        provider = args.provider
+        if not provider:
+            state = load_active_session(root)
+            provider = (state or {}).get("provider", "claude")
+        return resume(provider, args.session_id, dry_run=args.dry_run)
+
     ap.print_help()
     return 1
 
