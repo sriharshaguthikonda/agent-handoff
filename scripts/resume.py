@@ -28,12 +28,14 @@ sys.path.insert(0, str(_HERE.parent))
 from lib.core import (
     HANDOFF_ROOT,
     append_audit,
+    is_replayed,
     load_active_session,
     load_env,
     read_answer,
     read_json,
     read_question,
     validate_answer,
+    validate_answer_ttl,
 )
 
 
@@ -107,6 +109,20 @@ def process_answer(root: Path, ans_path: Path, dry_run: bool = False) -> None:
     if not question:
         print(f"skip {ans_path.name}: question file not found", file=sys.stderr)
         append_audit("answer_skipped", question_id=question_id, reason="question_not_found")
+        return
+
+    # Phase 4: replay guard
+    if is_replayed(root, question_id):
+        print(f"skip {ans_path.name}: already resumed (replay)", file=sys.stderr)
+        append_audit("answer_replay_blocked", root=root, question_id=question_id)
+        return
+
+    # Phase 4: TTL guard
+    env = load_env(root)
+    ttl_ok, ttl_reason = validate_answer_ttl(question, env)
+    if not ttl_ok:
+        print(f"skip {ans_path.name}: {ttl_reason}", file=sys.stderr)
+        append_audit("answer_ttl_blocked", root=root, question_id=question_id, reason=ttl_reason)
         return
 
     ok, reason = validate_answer(question, answer)

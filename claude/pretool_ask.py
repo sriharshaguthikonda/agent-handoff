@@ -3,7 +3,7 @@
 
 Sleep/wake handshake:
   no answer → write question file, notify, audit, return defer
-  answer present → validate, return allow + updatedInput
+  answer present → validate (TTL + replay + sig), return allow + updatedInput
 
 Invoked by Claude Code in -p mode when AskUserQuestion fires.
 Reads JSON from stdin (Claude hook contract).
@@ -24,11 +24,15 @@ from lib.core import (
     HANDOFF_ROOT,
     append_audit,
     derive_question_id_stable,
+    is_replayed,
     load_env,
+    load_or_create_envelope_key,
     read_answer,
     read_question,
     save_active_session,
     validate_answer,
+    validate_answer_ttl,
+    verify_question_sig,
     write_handoff_state,
     write_question,
 )
@@ -51,7 +55,6 @@ def run_notify(root: Path, question_id: str, summary: str, env: dict) -> None:
             capture_output=True,
         )
     except Exception as e:
-        # notification failure must never kill the hook
         sys.stderr.write(f"notify failed: {e}\n")
 
 
@@ -79,6 +82,34 @@ def main() -> int:
     if answer is not None:
         question = read_question(root, question_id)
         if question is not None:
+            # Phase 4: replay check
+            if is_replayed(root, question_id):
+                sys.stderr.write(f"replay rejected: {question_id} already accepted\n")
+                append_audit("answer_replay_rejected", question_id=question_id)
+                emit({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "defer"}})
+                return 0
+
+            # Phase 4: TTL check
+            ttl_ok, ttl_reason = validate_answer_ttl(question, env)
+            if not ttl_ok:
+                sys.stderr.write(f"TTL rejected: {ttl_reason}\n")
+                append_audit("answer_ttl_rejected", question_id=question_id, reason=ttl_reason)
+                emit({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "defer"}})
+                return 0
+
+            # Phase 5: signature check (only if question was signed)
+            if "hmac_sig" in question:
+                try:
+                    key = load_or_create_envelope_key(root)
+                    sig_ok, sig_reason = verify_question_sig(key, question)
+                    if not sig_ok:
+                        sys.stderr.write(f"sig rejected: {sig_reason}\n")
+                        append_audit("answer_sig_rejected", question_id=question_id, reason=sig_reason)
+                        emit({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "defer"}})
+                        return 0
+                except Exception as e:
+                    sys.stderr.write(f"sig verify error (proceeding): {e}\n")
+
             ok, reason = validate_answer(question, answer)
             if not ok:
                 sys.stderr.write(f"stale answer rejected: {reason}\n")

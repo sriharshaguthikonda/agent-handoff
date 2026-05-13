@@ -5,12 +5,16 @@ All public helpers are pure-Python stdlib — no third-party deps.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import hmac as _hmac
 import json
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -144,6 +148,142 @@ def append_audit(event_type: str, root: Path | None = None, **kwargs: Any) -> No
 
 
 # ---------------------------------------------------------------------------
+# Phase 4: File lock for HANDOFF.json (cross-platform)
+# ---------------------------------------------------------------------------
+
+class LockTimeout(RuntimeError):
+    pass
+
+
+@contextlib.contextmanager
+def handoff_lock(root: Path, timeout: float = 5.0):
+    """Exclusive file lock for HANDOFF.json read-modify-write cycles.
+
+    Uses O_EXCL atomic create — works on Windows and POSIX.
+    """
+    lock_path = root / "handoff" / ".HANDOFF.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout
+    fd = None
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            if time.monotonic() > deadline:
+                raise LockTimeout(f"timed out acquiring {lock_path}")
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+        try:
+            os.unlink(str(lock_path))
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: TTL validation
+# ---------------------------------------------------------------------------
+
+def validate_answer_ttl(question: dict, env: dict) -> tuple[bool, str]:
+    """Reject if question is older than HANDOFF_ANSWER_TTL seconds."""
+    ttl_raw = env.get("HANDOFF_ANSWER_TTL", "")
+    if not ttl_raw:
+        return True, "no ttl configured"
+    try:
+        ttl_secs = int(ttl_raw)
+    except ValueError:
+        return True, "invalid HANDOFF_ANSWER_TTL — skipped"
+    created_at = question.get("created_at", "")
+    if not created_at:
+        return True, "no created_at in question"
+    try:
+        created = datetime.fromisoformat(created_at)
+        age = (datetime.now(timezone.utc) - created).total_seconds()
+        if age > ttl_secs:
+            return False, f"TTL expired: question age {age:.0f}s > {ttl_secs}s"
+    except Exception:
+        pass
+    return True, "ok"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Replay detection via audit log
+# ---------------------------------------------------------------------------
+
+def is_replayed(root: Path, question_id: str) -> bool:
+    """Return True if audit log already shows answer_accepted for this question."""
+    audit_path = root / "audit" / "events.jsonl"
+    if not audit_path.exists():
+        return False
+    try:
+        for line in audit_path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+                if row.get("event") == "answer_accepted" and row.get("question_id") == question_id:
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Envelope signing (HMAC-SHA256)
+# ---------------------------------------------------------------------------
+
+def load_or_create_envelope_key(root: Path) -> bytes:
+    """Load or generate the per-host HMAC key from state/.envelope_key (owner-only)."""
+    key_path = root / "state" / ".envelope_key"
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    if key_path.exists():
+        raw = key_path.read_bytes().strip()
+        if len(raw) == 64:
+            try:
+                return bytes.fromhex(raw.decode("ascii"))
+            except Exception:
+                pass
+    key = secrets.token_bytes(32)
+    key_path.write_bytes(key.hex().encode("ascii"))
+    try:
+        os.chmod(str(key_path), 0o600)
+    except Exception:
+        pass
+    return key
+
+
+def _envelope_msg(obj: dict) -> bytes:
+    """Canonical HMAC input: question_id + session_id + version + checksum."""
+    fields = {k: obj[k] for k in sorted(["question_id", "session_id", "version", "checksum"]) if k in obj}
+    return json.dumps(fields, sort_keys=True).encode("utf-8")
+
+
+def sign_question(key: bytes, obj: dict) -> dict:
+    """Return copy of obj with hmac_sig field added."""
+    obj = dict(obj)
+    sig = _hmac.new(key, _envelope_msg(obj), "sha256").hexdigest()
+    obj["hmac_sig"] = sig
+    return obj
+
+
+def verify_question_sig(key: bytes, obj: dict) -> tuple[bool, str]:
+    """Verify hmac_sig on a question dict. Returns (ok, reason)."""
+    stored = obj.get("hmac_sig", "")
+    if not stored:
+        return False, "no hmac_sig in question"
+    expected = _hmac.new(key, _envelope_msg(obj), "sha256").hexdigest()
+    if not _hmac.compare_digest(stored, expected):
+        return False, "hmac_sig mismatch — possible tampering or key rotation"
+    return True, "ok"
+
+
+# ---------------------------------------------------------------------------
 # Question file
 # ---------------------------------------------------------------------------
 
@@ -176,10 +316,17 @@ def write_question(
         "context_summary": summary,
         "version": 1,
     }
-    # checksum over content without checksum key
+    # checksum over content without checksum/hmac fields
     obj["checksum"] = "sha256:" + hashlib.sha256(
-        json.dumps({k: v for k, v in obj.items() if k != "checksum"}, sort_keys=True).encode()
+        json.dumps({k: v for k, v in obj.items() if k not in ("checksum", "hmac_sig")}, sort_keys=True).encode()
     ).hexdigest()
+
+    # Phase 5: sign envelope (best-effort — old installs without key still work)
+    try:
+        key = load_or_create_envelope_key(root)
+        obj = sign_question(key, obj)
+    except Exception:
+        pass
 
     path = root / "questions" / f"{question_id}.json"
     atomic_write_json(path, obj)
@@ -227,20 +374,22 @@ def write_handoff_state(
     repo: str = "",
 ) -> None:
     git = get_git_info(repo or None)
-    obj = {
-        "version": _next_handoff_version(root),
-        "active_session": {
-            "provider": provider,
-            "session_id": session_id,
-            "repo": repo,
-            "branch": git["branch"],
-            "head_commit": git["commit"],
-            "status": status,
-            "blocking_question_id": question_id,
-        },
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    atomic_write_json(root / "handoff" / "HANDOFF.json", obj)
+    with handoff_lock(root):
+        version = _next_handoff_version(root)
+        obj = {
+            "version": version,
+            "active_session": {
+                "provider": provider,
+                "session_id": session_id,
+                "repo": repo,
+                "branch": git["branch"],
+                "head_commit": git["commit"],
+                "status": status,
+                "blocking_question_id": question_id,
+            },
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        atomic_write_json(root / "handoff" / "HANDOFF.json", obj)
 
     q = read_question(root, question_id)
     summary = q.get("context_summary", "") if q else ""
