@@ -33,4 +33,20 @@ File-based sleep/wake handshake so coding agents can ask humans questions withou
 
 ## Current phase
 
-Phase 0 scaffold complete. See `docs/ROADMAP.md` for Phase 1 deliverables.
+Phases 0-3 complete. 37 tests green. See `docs/ROADMAP.md` for Phase 4+ deliverables.
+
+## Quick start
+
+```bash
+# 1. Copy .env.example to .env and fill in tokens
+# 2. Wire Claude Code hook (copy claude/settings.example.json to .claude/settings.json in target repo)
+# 3. Start watcher
+python scripts/resume.py --watch
+
+# 4. Run a Claude non-interactive session
+claude -p "do something that needs a human decision" --bare
+
+# 5. Answer appears in questions/. Write answers/q_<id>.json:
+#    {"question_id":"q_...","session_id":"...","parent_version":1,"head_commit_at_answer":"...","answers":[{"answer":"your answer"}]}
+# Watcher detects it, resumes session automatically.
+```
