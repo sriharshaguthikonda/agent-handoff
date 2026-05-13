@@ -1,0 +1,20 @@
+.env
+.env.local
+*.pyc
+__pycache__/
+.venv/
+venv/
+
+# runtime state — never commit
+questions/q_*.json
+answers/q_*.json
+audit/events.jsonl
+state/active_session.json
+state/provider_state.json
+handoff/HANDOFF.json
+
+# keep the dir structure
+!questions/.gitkeep
+!answers/.gitkeep
+!audit/.gitkeep
+!state/.gitkeep
