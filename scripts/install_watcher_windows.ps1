@@ -23,7 +23,7 @@ $Action = New-ScheduledTaskAction `
 $Trigger = New-ScheduledTaskTrigger `
     -Once `
     -At (Get-Date).AddSeconds(10) `
-    -RepetitionInterval (New-TimeSpan -Seconds 30)
+    -RepetitionInterval (New-TimeSpan -Minutes 1)
 
 $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Hours 0) `
@@ -36,9 +36,8 @@ Register-ScheduledTask `
     -Action $Action `
     -Trigger $Trigger `
     -Settings $Settings `
-    -RunLevel Highest `
     -Force | Out-Null
 
 Write-Host "Registered: $TaskName"
-Write-Host "Watcher polls answers/ every 30s."
+Write-Host "Watcher polls answers/ every 60s (Windows min repetition interval)."
 Write-Host "To uninstall: Unregister-ScheduledTask -TaskName $TaskName -Confirm:`$false"
