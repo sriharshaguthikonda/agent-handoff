@@ -77,6 +77,8 @@ class TestTelegram:
         body = json.loads(req.data.decode())
         assert body["chat_id"] == "12345"
         assert "q_test_001" in body["text"]
+        assert body["reply_markup"]["force_reply"] is True
+        assert body["reply_markup"]["selective"] is True
 
 
 class TestSlack:

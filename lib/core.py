@@ -10,6 +10,7 @@ import hashlib
 import hmac as _hmac
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -341,8 +342,54 @@ def read_question(root: Path, question_id: str) -> dict | None:
 # Answer file
 # ---------------------------------------------------------------------------
 
+QUESTION_ID_RE = re.compile(r"^q_[A-Za-z0-9_]+$")
+
+
+def is_valid_question_id(question_id: str) -> bool:
+    return bool(QUESTION_ID_RE.fullmatch(question_id or ""))
+
+
 def read_answer(root: Path, question_id: str) -> dict | None:
     return read_json(root / "answers" / f"{question_id}.json")
+
+
+def write_answer(
+    root: Path,
+    question: dict,
+    answer_text: str,
+    source: str,
+    metadata: dict | None = None,
+) -> Path:
+    question_id = question.get("question_id", "")
+    if not is_valid_question_id(question_id):
+        raise ValueError("invalid question_id")
+    answer_path = root / "answers" / f"{question_id}.json"
+    if answer_path.exists():
+        raise FileExistsError(str(answer_path))
+
+    git = get_git_info(question.get("repo") or None)
+    head_commit = git.get("commit") or "unknown"
+    if head_commit == "unknown":
+        head_commit = question.get("head_commit", "unknown")
+
+    meta = metadata or {}
+    notes_parts = [f"source={source}"]
+    for key in sorted(meta):
+        value = meta[key]
+        if value is not None and value != "":
+            notes_parts.append(f"{key}={value}")
+
+    answer = {
+        "question_id": question_id,
+        "session_id": question.get("session_id", ""),
+        "parent_version": question.get("version", 1),
+        "answered_at": datetime.now(timezone.utc).isoformat(),
+        "answers": [{"answer": answer_text}],
+        "notes": " ".join(notes_parts),
+        "head_commit_at_answer": head_commit,
+    }
+    atomic_write_json(answer_path, answer)
+    return answer_path
 
 
 def validate_answer(question: dict, answer: dict) -> tuple[bool, str]:

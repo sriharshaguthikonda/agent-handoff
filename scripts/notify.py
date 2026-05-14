@@ -58,6 +58,11 @@ def send_telegram(env: dict, payload: dict) -> bool:
     body = json.dumps({
         "chat_id": chat,
         "text": f"Agent blocked: {payload['question_id']}\n{payload['summary']}",
+        "reply_markup": {
+            "force_reply": True,
+            "selective": True,
+            "input_field_placeholder": "Reply with the answer",
+        },
     }).encode("utf-8")
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
     try:
