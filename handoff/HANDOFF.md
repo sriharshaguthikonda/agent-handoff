@@ -1,9 +1,11 @@
 # Handoff state
 
-**Status**: no active question.
+**Status**: waiting_for_human
+**Question**: q_0107e030785a386c
+**Session**: a4fa38b7-d6f4-4802-910d-d232d5a10c24 (claude)
+**Branch**: unknown @ `unknown`
+**Summary**: Which recovery approach?
 
-This file is overwritten by `claude/pretool_ask.py` and `codex/stop_gate.py` whenever the agent goes to sleep waiting for human input.
+Write your answer to `answers/q_0107e030785a386c.json`, then `resume.py --session-id a4fa38b7-d6f4-4802-910d-d232d5a10c24` fires automatically.
 
-See `handoff/HANDOFF.json` for the machine-readable mirror.
-See `questions/` for the current question queue.
-See `answers/` for human responses pending consumption.
+Updated: 2026-05-14T01:24:22.650603+00:00

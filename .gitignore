@@ -11,6 +11,8 @@ answers/q_*.json
 audit/events.jsonl
 state/active_session.json
 state/provider_state.json
+state/telegram_ingest.json
+state/.envelope_key
 handoff/HANDOFF.json
 
 # keep the dir structure

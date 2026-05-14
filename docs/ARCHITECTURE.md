@@ -95,7 +95,7 @@ Single-writer. Always describes latest session resume target.
 5. Hook returns {"permissionDecision": "defer"}
 6. Claude exits with stop_reason: "tool_deferred", saves deferred_tool_use to session
 7. Watcher (scripts/resume.py daemon) polls answers/ every N seconds
-8. Human writes answers/q_<id>.json (via Telegram bot reply, web UI, or text editor)
+8. Human writes answers/q_<id>.json (direct file edit or Telegram reply ingest)
 9. Watcher validates: parent_version matches, head_commit matches (or forced reconcile)
 10. Watcher runs: claude -p --resume <session_id>
 11. PreToolUse hook fires again on the SAME deferred AskUserQuestion
@@ -116,6 +116,23 @@ Single-writer. Always describes latest session resume target.
 8. SessionStart hook (codex/session_start.py) injects answer via additionalContext
 9. Codex continues. Note: this DOES add one new turn — strictly inferior to Claude path
 ```
+
+## Inbound answer ingest target
+
+All human-input channels must converge on the same file contract: `answers/q_<id>.json`.
+
+Telegram reply ingest should be a small edge adapter:
+
+```
+1. Telegram notification message includes q_<id>
+2. User replies to that message
+3. scripts/telegram_ingest.py polls getUpdates
+4. Ingest validates chat/user + qid regex + question file
+5. Ingest writes answers/q_<id>.json by atomic rename
+6. Existing Claude/Codex resume code consumes the answer file
+```
+
+Webhook mode is not the current implementation target. Local polling is preferred until this repo intentionally grows a public HTTPS endpoint.
 
 ## Integrity rules
 

@@ -148,11 +148,15 @@ The per-host HMAC key is auto-generated at `state/.envelope_key` (owner-only, 60
 
 ## How the human answers
 
-Three paths, ranked by friction:
+Working paths:
 
-1. **Telegram reply** — bot DM contains question + buttons. Reply writes `answers/q_<id>.json` via bot webhook. **Lowest friction.**
-2. **Web mini-UI** — `scripts/web_ui.py` (FastAPI, localhost only). Lists pending questions, form submit writes the JSON. (Phase 2 roadmap item.)
-3. **Direct file edit** — open `answers/q_<id>.json` in editor, fill in `answers` field, save. **Always works.**
+1. **Direct file edit** — open `answers/q_<id>.json`, fill in `answers`, save. **Always works.**
+
+2. **Telegram reply ingest** — bot DM contains `q_<id>` and uses force-reply. Replying to that message writes `answers/q_<id>.json` through `scripts/telegram_ingest.py`.
+
+Future path:
+
+3. **Web mini-UI** — `scripts/web_ui.py` (FastAPI, localhost only). Lists pending questions, form submit writes the JSON.
 
 Answer schema:
 
@@ -186,6 +190,20 @@ ls C:/AI/agent-handoff/questions/
 
 # 5. Watcher resumes session automatically (if running)
 # Or manually: python C:/AI/agent-handoff/scripts/resume.py --session-id <id>
+```
+
+Telegram auto-write verification:
+
+```powershell
+python C:/AI/agent-handoff/scripts/telegram_ingest.py --watch
+# Reply to the bot message, then verify:
+Get-ChildItem C:/AI/agent-handoff/answers/q_*.json
+```
+
+Install Telegram ingest as a Windows Scheduled Task:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:/AI/agent-handoff/scripts/install_telegram_ingest_windows.ps1
 ```
 
 ---

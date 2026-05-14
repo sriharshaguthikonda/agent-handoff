@@ -58,9 +58,15 @@
 - `scripts/merge_codex.py`: same safe-merge pattern for `~/.codex/hooks.json`
 - Codex same-turn pause is not natively possible (Codex `Stop` hook fires *after* turn ends); Codex uses the established `[[QUESTION]]` marker + SessionStart-injection pattern → effectively defer-mode only
 
+## Phase 9 — Telegram reply ingest ✅ DONE
+- `scripts/telegram_ingest.py`: Telegram `getUpdates` polling, reply/leading-qid parsing, chat/user validation, answer-file writes
+- `scripts/notify.py`: Telegram messages now request force-reply while keeping `q_<id>` visible
+- `scripts/install_telegram_ingest_windows.ps1`: Windows Scheduled Task installer for the ingest watcher
+- Existing block/defer resume logic is unchanged; it consumes the same `answers/q_<id>.json` file
+- Detailed handoff plan: `docs/plans/telegram-reply-ingest.md`
+
 ## Out of scope (for now)
 - Cloud-hosted handoff server (use OpenAI background mode or Copilot cloud agent)
 - Multi-user / team handoff (single-user local-first)
 - Cross-machine sync (use Syncthing on `answers/` if needed)
-- Telegram bot webhook auto-write on reply (future Phase 2 extension)
 - Web mini-UI FastAPI localhost server (future Phase 2 extension)
