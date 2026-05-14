@@ -5,7 +5,9 @@ Same-turn pause: hook polls answer file until answer arrives or timeout.
 Session stays alive in same turn — no resume needed.
 
 Config (via .env):
-    HANDOFF_BLOCK_TIMEOUT  seconds to wait for answer (default 1800 = 30 min)
+    HANDOFF_BLOCK_TIMEOUT  seconds to wait for answer (default 7000, just under
+                           the 7200s Claude Code hook deadline configured by
+                           merge_settings.py --mode block)
     HANDOFF_BLOCK_POLL     poll interval seconds (default 2.0)
 
 On timeout: returns defer (falls back to resume-style flow via watcher).
@@ -152,7 +154,7 @@ def main() -> int:
     run_notify(root, question_id, summary, env)
     append_audit("notification_sent", question_id=question_id)
 
-    timeout = float(env.get("HANDOFF_BLOCK_TIMEOUT", "1800"))
+    timeout = float(env.get("HANDOFF_BLOCK_TIMEOUT", "7000"))
     poll = float(env.get("HANDOFF_BLOCK_POLL", "2.0"))
     deadline = time.monotonic() + timeout
 

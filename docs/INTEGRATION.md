@@ -33,7 +33,7 @@ The script appends only entries whose `command` string is not already present â€
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `HANDOFF_BLOCK_TIMEOUT` | `1800` | Seconds the hook polls before falling back to defer |
+| `HANDOFF_BLOCK_TIMEOUT` | `7000` | Seconds the hook polls before falling back to defer. Default sits just under the 7200s Claude Code hook deadline set by `merge_settings.py --mode block`. |
 | `HANDOFF_BLOCK_POLL` | `2.0` | Poll interval seconds |
 
 ### Non-interactive scope
