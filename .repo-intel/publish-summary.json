@@ -1,0 +1,18 @@
+﻿{
+    "schemaVersion":  "repo-map-artifact-branch/v1",
+    "repo":  "sriharshaguthikonda/agent-handoff",
+    "generatedAt":  "2026-06-01T06:34:40.1095946Z",
+    "source":  "Repo_maps GitHub footprint publish runner",
+    "publishBranch":  "repo-intel-artifacts",
+    "mapCount":  1,
+    "totalBytes":  222103,
+    "maps":  [
+                 {
+                     "name":  "main",
+                     "ref":  "refs/remotes/origin/main",
+                     "commit":  "ded8aee27c46426f9c3e5c953e834aeeb4a86b5a",
+                     "path":  ".repo-intel/branches/remote-origin/main__ded8aee27c46/repo-map-full.json",
+                     "bytes":  218761
+                 }
+             ]
+}
